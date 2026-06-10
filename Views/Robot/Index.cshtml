@@ -1,0 +1,160 @@
+﻿@{
+    Layout = null;
+    ViewData["Title"] = "A.R.I.A.";
+}
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>A.R.I.A. — Autonomous Robotic Intelligence Assistant</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link href="https://fonts.googleapis.com/css2?family=Bebas+Neue&family=Rajdhani:wght@300;400;500;600;700&family=JetBrains+Mono:wght@300;400;500&display=swap"
+          rel="stylesheet">
+    <link rel="stylesheet" href="~/css/aria.css" asp-append-version="true" />
+</head>
+<body>
+
+    @Html.AntiForgeryToken()
+
+    <!-- Hidden webcam for face tracking — stays in the browser, never uploaded -->
+    <video id="wcam" autoplay playsinline muted></video>
+
+    <!-- LOADER -->
+    <div id="loader">
+        <div id="loader-name">A.R.I.A.</div>
+        <div id="loader-label">INITIALISING NEURAL INTERFACE</div>
+        <div id="loader-track"><div id="loader-fill"></div></div>
+    </div>
+
+    <div id="bg-text">A.R.I.A.</div>
+    <div class="corner tl"></div>
+    <div class="corner bl"></div>
+
+    <!-- PERMISSION BAR -->
+    <div id="perm-bar">
+        <span id="perm-label">Enable camera &amp; location for the full ARIA experience</span>
+        <button id="btn-cam" class="perm-btn">&#128247; Camera</button>
+        <button id="btn-loc" class="perm-btn">&#128205; Location</button>
+        <button id="btn-skip" class="perm-skip">Skip</button>
+    </div>
+
+    <!-- SIRI-STYLE LISTENING OVERLAY -->
+    <div id="siri-overlay">
+        <div id="siri-label">Listening<span class="siri-dots">...</span></div>
+        <div id="siri-wave">
+            <span class="sw"></span><span class="sw"></span><span class="sw"></span>
+            <span class="sw"></span><span class="sw"></span><span class="sw"></span>
+            <span class="sw"></span><span class="sw"></span><span class="sw"></span>
+            <span class="sw"></span><span class="sw"></span><span class="sw"></span>
+            <span class="sw"></span><span class="sw"></span><span class="sw"></span>
+        </div>
+        <canvas id="siri-arc" width="64" height="64"></canvas>
+        <div id="siri-hint">Silence for 3 s sends &nbsp;·&nbsp; tap to cancel</div>
+    </div>
+
+    <!-- TOP BAR -->
+    <div id="top-bar">
+        <div id="logo">
+            A.R.I.A.
+            <span id="logo-sub">AUTONOMOUS ROBOTIC INTELLIGENCE ASSISTANT</span>
+        </div>
+        <div id="top-indicators">
+            <button id="cam-indicator" class="indicator off" title="Click to toggle camera">&#128247; <span>CAM</span></button>
+            <button id="loc-indicator" class="indicator off" title="Click to toggle location">&#128205; <span>OFF</span></button>
+            <div id="wake-indicator" class="indicator off">&#127908; <span>WAKE</span></div>
+            <div id="status-pill" class="idle">
+                <div id="status-dot"></div>
+                <span id="status-text">ONLINE</span>
+            </div>
+        </div>
+    </div>
+
+    <!-- MAIN APP -->
+    <div id="app">
+
+        <!-- LEFT: ROBOT -->
+        <div id="spline-wrap">
+
+            <!--
+                SPLINE ROBOT — loaded via iframe (most reliable method).
+                The CSS filter inverts the scene:
+                  grey background  → black
+                  black robot      → white / silver
+                  white NEXBOT text → black (invisible against black bg)
+                The badge-cover div hides the "Built with Spline" watermark.
+            -->
+            <iframe id="spline-iframe"
+                    src="https://my.spline.design/nexbotrobotcharacterconcept-mXvyYBC9cfLmc4ojtH9tWg4c/"
+                    frameborder="0"
+                    allow="camera; microphone"
+                    title="ARIA Robot">
+            </iframe>
+
+            <!--
+                THREE.JS FALLBACK — shown automatically if the iframe fails to load.
+                Detected by checking iframe contentDocument after 8 seconds.
+            -->
+            <canvas id="fallback-canvas"></canvas>
+
+            <!-- Covers "Built with Spline" badge at bottom-right of iframe -->
+            <div id="badge-cover"></div>
+
+            <!-- Speaking visual effects -->
+            <div id="head-halo"></div>
+            <div id="mouth-glow"></div>
+            <div id="ripple-container"></div>
+            <div id="bottom-fade"></div>
+        </div>
+
+        <!-- RIGHT: CHAT PANEL -->
+        <div id="chat-panel">
+
+            <div id="chat-header">
+                <div id="chat-title">DIALOGUE</div>
+                <div id="chat-meta">
+                    <div class="live-dot"></div>
+                    <p>SECURE &middot; ENCRYPTED &middot; LOCAL ONLY</p>
+                </div>
+            </div>
+
+            <div id="voice-row">
+                <label>VOICE</label>
+                <select id="voiceSelect"><option>Loading voices...</option></select>
+            </div>
+
+            <div id="messages">
+                <div class="msg-welcome">
+                    <strong>A.R.I.A. ONLINE</strong><br>
+                    Type a question, tap &#127908;, or say <em>"ARIA"</em> to wake me.
+                </div>
+            </div>
+
+            <div id="input-area">
+                <button class="btn-icon" id="micBtn" title="Tap to speak">&#127908;</button>
+                <button class="btn-icon" id="recordBtn" title="Record a lecture">&#128308;</button>
+                <input id="textInput" type="text" placeholder="Send a message..." autocomplete="off" />
+                <button id="sendBtn">SEND</button>
+            </div>
+
+            <div id="record-status" class="hidden">
+                <span class="rec-dot"></span>
+                <span id="rec-label">Recording &nbsp;<span id="rec-timer">0:00</span></span>
+                <button id="rec-stop">&#9646; Save</button>
+                <button id="rec-transcribe">&#9646; Transcribe</button>
+            </div>
+
+            <div id="input-hint">
+                ENTER &middot; &#127908; mic &middot; &#128308; record &middot; say "ARIA" to wake
+            </div>
+
+        </div>
+    </div>
+
+    <!-- Three.js (for fallback robot only) -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+    <!-- App logic -->
+    <script src="~/js/aria.js" asp-append-version="true"></script>
+
+</body>
+</html>

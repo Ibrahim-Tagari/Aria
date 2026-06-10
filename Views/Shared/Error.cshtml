@@ -1,0 +1,24 @@
+﻿@model AiRobotDemo.Models.ErrorViewModel
+@{
+    Layout = null;
+}
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="utf-8" />
+    <title>Error</title>
+    <style>
+            body{background:#000;color:#888;font-family:monospace;display:flex;align-items:center;justify-content:center;height:100vh;margin:0}
+            .b{border:1px solid rgba(74,172,255,0.2);padding:40px;border-radius:8px;text-align:center}
+        h1{color:#ff4455;margin-bottom:12px}code{color:#4aacff;background:rgba(74,172,255,0.08);padding:2px 8px;border-radius:4px}</style>
+    </head>
+    <body>
+        <div class="b">
+            <h1>Error</h1><p>Something went wrong.</p>
+            @if (Model.ShowRequestId)
+            {
+                <p>Request ID: <code>@Model.RequestId</code></p>
+            }
+        </div>
+    </body>
+</html>
