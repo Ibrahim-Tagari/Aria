@@ -849,7 +849,14 @@ function stopRec(doT) {
         var blob = new Blob(recChunks, { type: actualMime });
         var url = URL.createObjectURL(blob), a = document.createElement('a');
         a.href = url; a.download = 'ARIA-Recording-' + new Date().toISOString().slice(0, 19).replace(/[T:]/g, '-') + '.' + ext;
-        document.body.appendChild(a); a.click(); document.body.removeChild(a);
+        document.body.appendChild(a);
+
+        if (/iPad|iPhone|iPod/.test(navigator.userAgent)) {
+            window.open(url, '_blank');
+        } else {
+            a.click();
+        }
+        document.body.removeChild(a);
         setTimeout(function () { URL.revokeObjectURL(url); }, 5000);
         addMsg('system', '[ Saved: ' + fmtTime(recSecs) + ' ' + ext.toUpperCase() + ' ]');
         if (doT) { addMsg('system', '[ Transcribing with Whisper... ]'); transcribeBlob(blob); }
@@ -868,6 +875,14 @@ async function transcribeBlob(blob) {
         var ta = document.createElement('a');
         ta.href = URL.createObjectURL(new Blob([data.transcript], { type: 'text/plain' }));
         ta.download = 'ARIA-Transcript-' + new Date().toISOString().slice(0, 10) + '.txt';
-        document.body.appendChild(ta); ta.click(); document.body.removeChild(ta);
+        document.body.appendChild(ta);
+
+        if (/iPad|iPhone|iPod/.test(navigator.userAgent)) {
+            window.open(ta.href, '_blank');
+        } else {
+            ta.click();
+        }
+
+        document.body.removeChild(ta);
     } catch (err) { addMsg('system', '\u26A0 Transcription error: ' + err.message); }
 }

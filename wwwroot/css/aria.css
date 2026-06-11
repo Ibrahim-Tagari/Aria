@@ -1168,4 +1168,45 @@ button#cam-indicator, button#loc-indicator {
         width: 0%;
         margin-left: 100%
     }
+
+    @media (max-width: 900px) {
+
+        :root {
+            --chat-w: 100vw;
+        }
+
+        html, body {
+            overflow-x: hidden;
+            overflow-y: auto;
+        }
+
+        #app {
+            display: flex;
+            flex-direction: column;
+            height: auto;
+            min-height: 100vh;
+        }
+
+        #spline-wrap {
+            height: 45vh;
+            min-height: 320px;
+        }
+
+        #chat-panel,
+        #chat-wrap {
+            width: 100%;
+            max-width: 100%;
+        }
+
+        #top-bar,
+        #perm-bar,
+        #siri-overlay {
+            right: 0;
+        }
+
+        #bg-text {
+            display: none;
+        }
+    }
+
 }
