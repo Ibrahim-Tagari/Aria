@@ -1168,45 +1168,198 @@ button#cam-indicator, button#loc-indicator {
         width: 0%;
         margin-left: 100%
     }
+}
 
-    @media (max-width: 900px) {
+/* ════════════════════════════════════════════════════════
+   RESPONSIVE — TABLET / MOBILE
+   ════════════════════════════════════════════════════════ */
+@media (max-width: 900px) {
 
-        :root {
-            --chat-w: 100vw;
-        }
-
-        html, body {
-            overflow-x: hidden;
-            overflow-y: auto;
-        }
-
-        #app {
-            display: flex;
-            flex-direction: column;
-            height: auto;
-            min-height: 100vh;
-        }
-
-        #spline-wrap {
-            height: 45vh;
-            min-height: 320px;
-        }
-
-        #chat-panel,
-        #chat-wrap {
-            width: 100%;
-            max-width: 100%;
-        }
-
-        #top-bar,
-        #perm-bar,
-        #siri-overlay {
-            right: 0;
-        }
-
-        #bg-text {
-            display: none;
-        }
+    html, body {
+        height: auto;
+        min-height: 100%;
+        overflow-x: hidden;
+        overflow-y: auto;
     }
 
+    #app {
+        display: flex;
+        flex-direction: column;
+        grid-template-columns: none;
+        width: 100%;
+        height: auto;
+        min-height: 100vh;
+    }
+
+    /* ── ROBOT PANEL ── */
+    #spline-wrap {
+        grid-column: auto;
+        position: relative;
+        width: 100%;
+        height: 50vh;
+        min-height: 320px;
+        flex-shrink: 0;
+    }
+
+    #spline-iframe,
+    #fallback-canvas {
+        position: absolute;
+        inset: 0;
+        width: 100%;
+        height: 100%;
+    }
+
+    #badge-cover {
+        width: 140px;
+        height: 50px;
+    }
+
+    #head-halo {
+        width: 200px;
+        height: 200px;
+    }
+
+    /* ── BARS THAT WERE PINNED BESIDE THE CHAT (right: var(--chat-w)) ── */
+    #top-bar,
+    #perm-bar,
+    #siri-overlay {
+        right: 0;
+        left: 0;
+        width: 100%;
+    }
+
+    #top-bar {
+        padding: 14px 16px;
+    }
+
+    #logo {
+        font-size: 1.1rem;
+        letter-spacing: 0.2em;
+    }
+
+    #top-indicators {
+        gap: 6px;
+        flex-wrap: wrap;
+        justify-content: flex-end;
+    }
+
+    .indicator {
+        font-size: 0.5rem;
+        padding: 3px 8px;
+    }
+
+    #status-pill {
+        font-size: 0.52rem;
+        padding: 5px 12px;
+    }
+
+    #siri-overlay {
+        height: 160px;
+    }
+
+    /* ── BACKGROUND TEXT ── */
+    #bg-text {
+        font-size: clamp(40px, 18vw, 110px);
+        padding-right: 0;
+    }
+
+    /* ── CHAT PANEL ── */
+    #chat-panel {
+        grid-column: auto;
+        position: relative;
+        width: 100%;
+        height: auto;
+        min-height: 50vh;
+        flex: 1 1 auto;
+        border-left: none;
+        border-top: 1px solid var(--border);
+    }
+
+    #chat-header {
+        padding: 16px 16px 14px;
+    }
+
+    #messages {
+        max-height: 60vh;
+    }
+
+    .msg-bubble {
+        max-width: calc(100vw - 80px);
+    }
+
+    /* ── CORNERS (decorative, hide on small screens) ── */
+    .corner {
+        display: none;
+    }
+}
+
+/* ════════════════════════════════════════════════════════
+   RESPONSIVE — SMALL PHONES
+   ════════════════════════════════════════════════════════ */
+@media (max-width: 480px) {
+
+    #spline-wrap {
+        height: 42vh;
+        min-height: 260px;
+    }
+
+    #chat-header {
+        padding: 12px 12px 10px;
+    }
+
+    #chat-title {
+        font-size: 0.95rem;
+    }
+
+    #voice-row {
+        padding: 8px 14px 0;
+        flex-wrap: wrap;
+    }
+
+    #messages {
+        padding: 10px 12px 6px;
+    }
+
+    .msg-bubble {
+        font-size: 0.68rem;
+        max-width: calc(100vw - 60px);
+    }
+
+    #input-area {
+        padding: 8px 10px;
+        flex-wrap: wrap;
+    }
+
+    #textInput {
+        font-size: 0.7rem;
+    }
+
+    .btn-icon,
+    #sendBtn {
+        height: 38px;
+    }
+
+    #badge-cover {
+        width: 100px;
+        height: 40px;
+    }
+}
+
+/* ════════════════════════════════════════════════════════
+   IOS SAFE-AREA / VIEWPORT FIXES
+   ════════════════════════════════════════════════════════ */
+@supports (-webkit-touch-callout: none) {
+    #top-bar {
+        padding-top: max(18px, env(safe-area-inset-top));
+    }
+
+    #input-area {
+        padding-bottom: max(10px, env(safe-area-inset-bottom));
+    }
+
+    @media (max-width: 900px) {
+        #top-bar {
+            padding-top: max(14px, env(safe-area-inset-top));
+        }
+    }
 }
