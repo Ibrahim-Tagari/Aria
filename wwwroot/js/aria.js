@@ -429,6 +429,14 @@ loadVoicesWithRetry();
 
 // Pre-warm TTS engine on first user gesture — eliminates Chrome/Safari cold-start delay
 // and is REQUIRED on iOS to unlock audio output for speechSynthesis.
+//
+// IMPORTANT: do NOT cancel() the warm utterance afterwards. On many mobile
+// engines, speak() immediately followed (even after a short delay) by
+// cancel() leaves the synthesis queue in a state where the NEXT speak()
+// call — which on this page happens later from inside an async fetch
+// stream, i.e. outside the original user-gesture call stack — is silently
+// dropped. The warm utterance is a single space at a very fast rate, so it
+// finishes in well under 100ms on its own; just let it end naturally.
 var ttsWarmed = false;
 function warmTTS() {
     if (ttsWarmed) return;
@@ -443,12 +451,6 @@ function warmTTS() {
         u.rate = 10;
         u.lang = 'en-US';
         window.speechSynthesis.speak(u);
-        // Some browsers leave a "warm" utterance in a paused state — cancel it
-        // shortly after so it doesn't block the real queue, but only after it's
-        // had a chance to actually run.
-        setTimeout(function () {
-            try { window.speechSynthesis.cancel(); } catch (e) { }
-        }, 250);
     } catch (e) { }
 }
 // Attach to multiple events to ensure warm happens on the first interaction
@@ -568,9 +570,12 @@ function drainTTS() {
 }
 
 function stopTTS() {
+    var hadWork = ttsQueue.length > 0 || ttsSpeaking || window.speechSynthesis.speaking || window.speechSynthesis.pending;
     ttsQueue = []; ttsSpeaking = false;
     clearTtsWatchdog();
-    try { window.speechSynthesis.cancel(); } catch (e) { }
+    if (hadWork) {
+        try { window.speechSynthesis.cancel(); } catch (e) { }
+    }
     if (ariaState === 'speaking') setState('idle');
 }
 
@@ -689,6 +694,27 @@ var HAS_SR = ('SpeechRecognition' in window || 'webkitSpeechRecognition' in wind
 var SR_CLASS = HAS_SR ? (window.SpeechRecognition || window.webkitSpeechRecognition) : null;
 var IS_IOS = /iPad|iPhone|iPod/.test(navigator.userAgent) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
 var IS_MOBILE = IS_IOS || /Android/i.test(navigator.userAgent);
+
+// ── SECURE CONTEXT CHECK ─────────────────────────────────────────────
+// SpeechRecognition (and on many mobile browsers, full SpeechSynthesis
+// output) require a secure context: https://, or http://localhost /
+// http://127.0.0.1. If this page is loaded over plain http:// from a
+// LAN IP (e.g. http://192.168.x.x:5000 while testing on a phone), mobile
+// browsers will report SpeechRecognition as "supported" but every
+// .start() call immediately errors with 'not-allowed' or
+// 'service-not-allowed' — NOT because the user denied microphone access.
+var IS_SECURE_CONTEXT = (function () {
+    if (typeof window.isSecureContext === 'boolean') return window.isSecureContext;
+    var h = location.hostname;
+    return location.protocol === 'https:' || h === 'localhost' || h === '127.0.0.1' || h === '[::1]';
+})();
+
+if (!IS_SECURE_CONTEXT) {
+    // Disable SR entirely — attempting .start() here just produces a
+    // confusing "microphone access blocked" message that has nothing to
+    // do with the actual mic permission.
+    HAS_SR = false;
+}
 
 var GREETING = 'Hi sir, how may I assist you?';
 var recPhase = 'wake';  // 'wake' | 'query' | 'manual' | 'off'
@@ -927,9 +953,13 @@ siriOverlay.addEventListener('click', function () {
 // the browser's user-gesture requirement before mic access is granted.
 wakeIndicator.addEventListener('click', function () {
     if (!HAS_SR) {
-        addMsg('system', IS_IOS
-            ? '\u26A0 Voice wake word isn\u2019t supported on iOS Safari. Tap the microphone button to speak instead.'
-            : '\u26A0 Voice input requires Chrome or Edge.');
+        if (!IS_SECURE_CONTEXT) {
+            addMsg('system', '\u26A0 Voice features need a secure connection. Open this page over HTTPS (or http://localhost) — voice wake word and recognition won\u2019t work over a plain http:// network address.');
+        } else if (IS_IOS) {
+            addMsg('system', '\u26A0 Voice wake word isn\u2019t supported on iOS Safari. Tap the microphone button to speak instead.');
+        } else {
+            addMsg('system', '\u26A0 Voice input requires Chrome or Edge.');
+        }
         return;
     }
 
@@ -974,8 +1004,13 @@ if (HAS_SR) {
         }
     }, 1200);
 } else {
-    setWakeLabel('off', 'N/A');
-    micBtn.title = IS_IOS ? 'Tap to speak (voice wake word unsupported on iOS)' : 'Voice input requires Chrome or Edge';
+    if (!IS_SECURE_CONTEXT) {
+        setWakeLabel('off', 'NEEDS HTTPS');
+        micBtn.title = 'Voice input needs HTTPS (this page is loaded over an insecure connection)';
+    } else {
+        setWakeLabel('off', 'N/A');
+        micBtn.title = IS_IOS ? 'Tap to speak (voice wake word unsupported on iOS)' : 'Voice input requires Chrome or Edge';
+    }
 }
 
 // ── Manual mic button ─────────────────────────────────────────────
@@ -983,7 +1018,11 @@ micBtn.addEventListener('click', function () {
     warmTTS();
 
     if (!HAS_SR) {
-        addMsg('system', '\u26A0 Voice input requires Chrome, Edge, or another browser with SpeechRecognition support.');
+        if (!IS_SECURE_CONTEXT) {
+            addMsg('system', '\u26A0 Voice input needs a secure connection (HTTPS or localhost). This page is loaded over plain http://, so the browser disables speech recognition.');
+        } else {
+            addMsg('system', '\u26A0 Voice input requires Chrome, Edge, or another browser with SpeechRecognition support.');
+        }
         return;
     }
 
