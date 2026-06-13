@@ -383,13 +383,31 @@ function stopLipSync() {
 //  5. iOS often reports voices with no "Google" match and can choke if
 //     u.lang isn't set explicitly → always set u.lang, and fall back to
 //     the system default voice (voice left unset) if no match found
+//  6. CHROME/ANDROID GC BUG: SpeechSynthesisUtterance objects with no
+//     surviving JS reference can be garbage-collected mid-speech, which
+//     silently stops audio and can prevent onend from firing. Fixed by
+//     keeping a persistent reference (currentUtterance) for the whole
+//     duration of speech.
+//  7. Many mobile browsers only allow speechSynthesis.speak() to actually
+//     produce audio when called synchronously within a user-gesture
+//     handler. Responses are spoken from inside an async fetch-stream
+//     loop, which is OUTSIDE that gesture. If the FIRST attempt to speak
+//     produces no audio (engine never reports .speaking), we surface a
+//     one-time "Tap to enable ARIA's voice" prompt; tapping it replays
+//     the queued text directly from a click handler, which unlocks audio
+//     for the rest of the session.
 // ================================================================
 var voices = [];
 var ttsQueue = [];
 var ttsSpeaking = false;
 var ttsReady = false;
 var ttsWatchdog = null;
+var currentUtterance = null; // FIX 6: persistent reference prevents mid-speech GC
 var IS_IOS_TTS = /iPad|iPhone|iPod/.test(navigator.userAgent) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
+var ttsUnlocked = false;          // becomes true once audio has actually been heard
+var ttsUnlockPromptShown = false;
+var ttsUnlockBanner = null;
+var pendingUnlockItem = null;     // the item that failed to produce audio, for retry
 
 // Load voices with polling — Chrome loads them async and sometimes
 // onvoiceschanged never fires, so we poll every 200ms until they appear
@@ -437,6 +455,9 @@ loadVoicesWithRetry();
 // stream, i.e. outside the original user-gesture call stack — is silently
 // dropped. The warm utterance is a single space at a very fast rate, so it
 // finishes in well under 100ms on its own; just let it end naturally.
+//
+// We also use this warm utterance to detect whether speech actually
+// produced audio on this device (ttsUnlocked), via onstart firing.
 var ttsWarmed = false;
 function warmTTS() {
     if (ttsWarmed) return;
@@ -450,6 +471,8 @@ function warmTTS() {
         u.volume = 0.01; // iOS can ignore volume:0 utterances entirely
         u.rate = 10;
         u.lang = 'en-US';
+        u.onstart = function () { ttsUnlocked = true; };
+        currentUtterance = u; // keep alive
         window.speechSynthesis.speak(u);
     } catch (e) { }
 }
@@ -462,9 +485,6 @@ function warmTTS() {
 // Periodically nudge it to keep long responses speaking.
 if (IS_IOS_TTS) {
     setInterval(function () {
-        if (window.speechSynthesis.speaking && !window.speechSynthesis.paused) {
-            // no-op kicker: reading .speaking keeps some iOS versions alive
-        }
         if (window.speechSynthesis.paused) {
             try { window.speechSynthesis.resume(); } catch (e) { }
         }
@@ -499,6 +519,52 @@ function clearTtsWatchdog() {
     if (ttsWatchdog) { clearTimeout(ttsWatchdog); ttsWatchdog = null; }
 }
 
+// ── "Tap to enable voice" banner ─────────────────────────────────────
+// Shown once if a speak() attempt never produces audio (common on mobile
+// when the response arrives async, outside any user-gesture). Tapping it
+// re-speaks the pending text directly inside the click handler, which
+// satisfies the gesture requirement and unlocks audio for the rest of
+// the session.
+function showUnlockBanner(item) {
+    if (ttsUnlockPromptShown) return;
+    ttsUnlockPromptShown = true;
+    pendingUnlockItem = item;
+
+    var row = document.createElement('div');
+    row.className = 'msg-row system';
+    row.id = 'tts-unlock-row';
+    var bubble = document.createElement('div');
+    bubble.className = 'msg-bubble';
+    bubble.style.cursor = 'pointer';
+    bubble.style.textDecoration = 'underline';
+    bubble.textContent = '\uD83D\uDD0A Tap here to enable ARIA\u2019s voice on this device';
+    row.appendChild(bubble);
+    messagesEl.appendChild(row);
+    messagesEl.scrollTop = messagesEl.scrollHeight;
+
+    bubble.addEventListener('click', function () {
+        if (row.parentNode) row.parentNode.removeChild(row);
+        if (!pendingUnlockItem) return;
+        var item = pendingUnlockItem;
+        pendingUnlockItem = null;
+
+        // Speak directly inside this click handler — satisfies the
+        // user-gesture requirement on mobile browsers.
+        try { window.speechSynthesis.cancel(); } catch (e) { }
+        var u = new SpeechSynthesisUtterance(item.text);
+        var voice = getBestVoice();
+        if (voice) { u.voice = voice; u.lang = voice.lang; } else { u.lang = 'en-US'; }
+        u.rate = 1.05; u.pitch = 1.0; u.volume = 1.0;
+        u.onstart = function () { ttsUnlocked = true; if (ariaState !== 'speaking') setState('speaking'); };
+        currentUtterance = u;
+        var advanced = false;
+        function advance() { if (advanced) return; advanced = true; if (item.cb) item.cb(); drainTTS(); }
+        u.onend = advance;
+        u.onerror = advance;
+        try { window.speechSynthesis.speak(u); } catch (e) { advance(); }
+    }, { once: true });
+}
+
 function drainTTS() {
     clearTtsWatchdog();
 
@@ -524,16 +590,20 @@ function drainTTS() {
     u.pitch = 1.0;
     u.volume = 1.0;
 
+    currentUtterance = u; // FIX 6: keep a strong reference alive for the duration
+
     var advanced = false;
     function advance() {
         if (advanced) return;
         advanced = true;
         clearTtsWatchdog();
+        if (currentUtterance === u) currentUtterance = null;
         if (item.cb) item.cb();
         drainTTS();
     }
 
     u.onstart = function () {
+        ttsUnlocked = true;
         if (ariaState !== 'speaking') setState('speaking');
         // Once it actually starts, give it a generous watchdog based on text
         // length in case onend never fires (known iOS issue).
@@ -551,11 +621,24 @@ function drainTTS() {
         window.speechSynthesis.speak(u);
 
         // Fallback watchdog in case onstart ALSO never fires (some Android
-        // WebViews / locked-screen iOS). If speech hasn't started within 1.5s,
-        // assume it silently failed and move on rather than blocking input.
+        // WebViews / locked-screen iOS, or audio blocked outside a user
+        // gesture). If speech hasn't started within 1.5s, assume it
+        // silently failed.
         clearTtsWatchdog();
         ttsWatchdog = setTimeout(function () {
             if (!window.speechSynthesis.speaking) {
+                if (!ttsUnlocked) {
+                    // Never successfully produced audio on this device yet —
+                    // likely blocked outside a user gesture. Offer a tap to
+                    // unlock instead of silently discarding the response.
+                    showUnlockBanner(item);
+                    advanced = true; // don't run normal advance() for this item
+                    clearTtsWatchdog();
+                    ttsSpeaking = false;
+                    if (ariaState === 'speaking') setState('idle');
+                    if (currentUtterance === u) currentUtterance = null;
+                    return;
+                }
                 advance();
             } else {
                 // It did start late — apply the normal length-based watchdog
@@ -573,6 +656,7 @@ function stopTTS() {
     var hadWork = ttsQueue.length > 0 || ttsSpeaking || window.speechSynthesis.speaking || window.speechSynthesis.pending;
     ttsQueue = []; ttsSpeaking = false;
     clearTtsWatchdog();
+    currentUtterance = null;
     if (hadWork) {
         try { window.speechSynthesis.cancel(); } catch (e) { }
     }
