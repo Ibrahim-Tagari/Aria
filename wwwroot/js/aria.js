@@ -581,15 +581,26 @@ textInput.addEventListener('keydown', function (e) { if (e.key === 'Enter') send
 sendBtn.addEventListener('click', function () { sendMessage(); });
 
 // ================================================================
-//  FIX 3 — WAKE WORD: SINGLE CONTINUOUS RECOGNISER
+//  FIX 3 — WAKE WORD ("say ARIA"), CROSS-PLATFORM
 //
-//  Using ONE recogniser that changes phase (wake → query).
-//  No stopping/restarting = instant response.
-//  When "aria" detected in interim results → immediately speaks greeting
-//  then continues listening in query mode.
+//  Desktop Chrome/Edge: continuous recognition starts automatically
+//  and restarts itself, so "ARIA" can be said at any time.
+//
+//  Mobile (Android Chrome / iOS Safari): browsers refuse to start
+//  SpeechRecognition without a user gesture, and iOS Safari does not
+//  implement SpeechRecognition at all. So:
+//    - On mobile, tapping the WAKE indicator "arms" the recogniser
+//      (the required user gesture). Once armed, it keeps restarting
+//      itself just like desktop, so saying "ARIA" after that works.
+//    - If SpeechRecognition is unsupported (iOS Safari), WAKE is
+//      disabled with a clear label and the user is told to use the
+//      manual mic button instead — which still requires a tap, so
+//      it always works on iOS.
 // ================================================================
 var HAS_SR = ('SpeechRecognition' in window || 'webkitSpeechRecognition' in window);
 var SR_CLASS = HAS_SR ? (window.SpeechRecognition || window.webkitSpeechRecognition) : null;
+var IS_IOS = /iPad|iPhone|iPod/.test(navigator.userAgent) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
+var IS_MOBILE = IS_IOS || /Android/i.test(navigator.userAgent);
 
 var GREETING = 'Hi sir, how may I assist you?';
 var recPhase = 'wake';  // 'wake' | 'query' | 'manual' | 'off'
@@ -599,6 +610,9 @@ var wakeTriggered = false;
 var mainRec = null;
 var silRAF = null, silStart = 0;
 var recRunning = false;
+var wakeArmed = false;     // becomes true once recogniser has successfully started at least once
+var fatalRecError = false; // true if SR is unusable (e.g. 'not-allowed' / 'service-not-allowed')
+var restartTimer = null;
 
 // Siri arc canvas
 var arcCtx = siriArcEl ? siriArcEl.getContext('2d') : null;
@@ -613,6 +627,104 @@ function drawArc(f) {
     }
 }
 
+function setWakeLabel(state, label) {
+    // state: 'on' | 'off' | 'na'
+    wakeIndicator.className = 'indicator ' + (state === 'on' ? 'on' : 'off');
+    var span = wakeIndicator.querySelector('span');
+    if (span) span.textContent = label;
+}
+
+// Main result/end/error handlers are defined as named functions so they
+// can be re-attached after manual-mode temporarily overrides them.
+function wakeQueryHandler(e) {
+    var latest = '';
+    for (var i = 0; i < e.results.length; i++) {
+        latest += e.results[i][0].transcript;
+    }
+    latest = latest.trim();
+
+    if (recPhase === 'wake') {
+        // Detect "aria" anywhere in interim/final results — respond IMMEDIATELY
+        if (latest.toLowerCase().indexOf('aria') !== -1 && !wakeTriggered && ariaState === 'idle') {
+            wakeTriggered = true;
+            onWakeDetected();
+        }
+    } else if (recPhase === 'query') {
+        // Remove the wake word from the query if it's at the start
+        var filtered = latest.replace(/^aria\s*/i, '').trim();
+        queryText = filtered;
+        if (queryText.length > 2) {
+            queryHasSpeech = true;
+            silStart = Date.now(); // reset silence timer
+            siriOverlay.classList.add('voice-active');
+        }
+    }
+    // manual phase handled separately
+}
+
+function wakeEndHandler() {
+    recRunning = false;
+    if (recPhase === 'wake' || recPhase === 'query') {
+        // Auto-restart — keep it continuous
+        if (restartTimer) clearTimeout(restartTimer);
+        restartTimer = setTimeout(function () {
+            if (recPhase !== 'off' && recPhase !== 'manual' && !fatalRecError) startMainRec();
+        }, 300);
+    }
+}
+
+function wakeErrorHandler(e) {
+    recRunning = false;
+
+    if (e.error === 'aborted') return;
+
+    if (e.error === 'no-speech') {
+        if (recPhase === 'query' && queryHasSpeech) { finaliseQuery(); return; }
+        // In wake phase, "no-speech" is normal — just restart quietly
+        if (restartTimer) clearTimeout(restartTimer);
+        restartTimer = setTimeout(function () {
+            if (recPhase !== 'off' && recPhase !== 'manual' && !fatalRecError) startMainRec();
+        }, 250);
+        return;
+    }
+
+    if (e.error === 'not-allowed' || e.error === 'service-not-allowed') {
+        // Mic permission denied / blocked — stop trying, surface clearly
+        fatalRecError = true;
+        recPhase = 'off';
+        setWakeLabel('off', 'NO MIC');
+        if (ariaState === 'idle') {
+            addMsg('system', '\u26A0 Microphone access blocked — wake word and voice input are unavailable. Allow microphone access for this site and reload.');
+        }
+        return;
+    }
+
+    if (e.error === 'audio-capture') {
+        fatalRecError = true;
+        recPhase = 'off';
+        setWakeLabel('off', 'NO MIC');
+        if (ariaState === 'idle') {
+            addMsg('system', '\u26A0 No microphone detected.');
+        }
+        return;
+    }
+
+    if (e.error === 'network') {
+        // Common on flaky mobile connections — back off longer
+        if (restartTimer) clearTimeout(restartTimer);
+        restartTimer = setTimeout(function () {
+            if (recPhase !== 'off' && recPhase !== 'manual' && !fatalRecError) startMainRec();
+        }, 1500);
+        return;
+    }
+
+    // Unknown error — retry with backoff
+    if (restartTimer) clearTimeout(restartTimer);
+    restartTimer = setTimeout(function () {
+        if (recPhase !== 'off' && recPhase !== 'manual' && !fatalRecError) startMainRec();
+    }, 800);
+}
+
 function initMainRec() {
     if (!HAS_SR) return;
     mainRec = new SR_CLASS();
@@ -621,57 +733,28 @@ function initMainRec() {
     mainRec.lang = 'en-US';
     mainRec.maxAlternatives = 1;
 
-    mainRec.onresult = function (e) {
-        var latest = '';
-        for (var i = 0; i < e.results.length; i++) {
-            latest += e.results[i][0].transcript;
-        }
-        latest = latest.trim();
+    mainRec.onresult = wakeQueryHandler;
+    mainRec.onend = wakeEndHandler;
+    mainRec.onerror = wakeErrorHandler;
 
-        if (recPhase === 'wake') {
-            // Detect "aria" in interim results — respond IMMEDIATELY
-            if (latest.toLowerCase().indexOf('aria') !== -1 && !wakeTriggered && ariaState === 'idle') {
-                wakeTriggered = true;
-                onWakeDetected();
-            }
-        } else if (recPhase === 'query') {
-            // Remove the wake word from the query if it's at the start
-            var filtered = latest.replace(/^aria\s*/i, '').trim();
-            queryText = filtered;
-            if (queryText.length > 2) {
-                queryHasSpeech = true;
-                silStart = Date.now(); // reset silence timer
-                siriOverlay.classList.add('voice-active');
-            }
-        }
-        // manual phase handled separately
-    };
-
-    mainRec.onend = function () {
-        recRunning = false;
-        if (recPhase === 'wake' || recPhase === 'query') {
-            // Auto-restart — keep it continuous
-            setTimeout(function () {
-                if (recPhase !== 'off' && recPhase !== 'manual') startMainRec();
-            }, 300);
-        }
-    };
-
-    mainRec.onerror = function (e) {
-        recRunning = false;
-        if (e.error === 'aborted') return;
-        if (e.error === 'no-speech') {
-            if (recPhase === 'query' && queryHasSpeech) { finaliseQuery(); return; }
-        }
-        setTimeout(function () {
-            if (recPhase !== 'off' && recPhase !== 'manual') startMainRec();
-        }, 500);
+    mainRec.onstart = function () {
+        recRunning = true;
+        wakeArmed = true;
+        fatalRecError = false;
+        if (recPhase === 'wake') setWakeLabel('on', 'WAKE');
     };
 }
 
 function startMainRec() {
-    if (!mainRec || recRunning) return;
-    try { mainRec.start(); recRunning = true; } catch (e) { recRunning = false; }
+    if (!mainRec || recRunning || fatalRecError) return;
+    try {
+        mainRec.start();
+        recRunning = true; // also set here in case onstart is delayed
+    } catch (e) {
+        recRunning = false;
+        // InvalidStateError can happen if start() is called while already starting —
+        // just let the next onend/timer cycle retry.
+    }
 }
 
 function stopMainRec() {
@@ -695,7 +778,7 @@ function onWakeDetected() {
         silStart = Date.now();
         showSiri();
         setState('listening');
-        wakeIndicator.className = 'indicator off';
+        setWakeLabel('off', 'LISTEN');
         startSilenceCountdown();
     });
 }
@@ -730,8 +813,7 @@ function finaliseQuery() {
     recPhase = 'wake';
     wakeTriggered = false;
     setState('idle');
-    wakeIndicator.className = 'indicator on';
-    wakeIndicator.querySelector('span').textContent = 'WAKE';
+    setWakeLabel('on', 'WAKE');
 
     if (spoken.length > 2) {
         sendMessage(spoken);
@@ -749,8 +831,43 @@ siriOverlay.addEventListener('click', function () {
     queryText = ''; queryHasSpeech = false;
     recPhase = 'wake'; wakeTriggered = false;
     setState('idle');
-    wakeIndicator.className = 'indicator on';
-    wakeIndicator.querySelector('span').textContent = 'WAKE';
+    setWakeLabel(fatalRecError ? 'off' : 'on', fatalRecError ? 'NO MIC' : 'WAKE');
+});
+
+// ── Wake indicator click — arms/disarms the recogniser ──────────────
+// On desktop this just toggles; on mobile this is REQUIRED to satisfy
+// the browser's user-gesture requirement before mic access is granted.
+wakeIndicator.addEventListener('click', function () {
+    if (!HAS_SR) {
+        addMsg('system', IS_IOS
+            ? '\u26A0 Voice wake word isn\u2019t supported on iOS Safari. Tap the microphone button to speak instead.'
+            : '\u26A0 Voice input requires Chrome or Edge.');
+        return;
+    }
+
+    if (fatalRecError) {
+        // Retry — user may have just granted mic permission
+        fatalRecError = false;
+        recPhase = 'wake';
+        setWakeLabel('on', 'WAKE');
+        startMainRec();
+        return;
+    }
+
+    if (recPhase === 'manual' || recPhase === 'query') return; // ignore while busy
+
+    if (recPhase === 'off') {
+        recPhase = 'wake';
+        wakeTriggered = false;
+        setWakeLabel('on', 'WAKE');
+        startMainRec();
+    } else {
+        // Currently on — turn off
+        recPhase = 'off';
+        wakeTriggered = false;
+        setWakeLabel('off', 'OFF');
+        stopMainRec();
+    }
 });
 
 // Start the single recogniser after page settles
@@ -758,31 +875,46 @@ if (HAS_SR) {
     initMainRec();
     setTimeout(function () {
         recPhase = 'wake';
-        wakeIndicator.className = 'indicator on';
-        wakeIndicator.querySelector('span').textContent = 'WAKE';
-        startMainRec();
-    }, 2500);
+        if (IS_MOBILE) {
+            // Don't auto-start on mobile: starting SpeechRecognition without a
+            // direct user gesture throws/silently fails on Android and is
+            // unsupported on iOS. Prompt the user to tap WAKE to enable it.
+            setWakeLabel('off', 'TAP TO ARM');
+        } else {
+            setWakeLabel('on', 'WAKE');
+            startMainRec();
+        }
+    }, 1200);
 } else {
-    wakeIndicator.querySelector('span').textContent = 'N/A';
-    micBtn.style.opacity = '0.30'; micBtn.style.cursor = 'not-allowed';
-    micBtn.title = 'Voice input requires Chrome or Edge';
+    setWakeLabel('off', 'N/A');
+    micBtn.title = IS_IOS ? 'Tap to speak (voice wake word unsupported on iOS)' : 'Voice input requires Chrome or Edge';
 }
 
 // ── Manual mic button ─────────────────────────────────────────────
 micBtn.addEventListener('click', function () {
     warmTTS();
+
+    if (!HAS_SR) {
+        addMsg('system', '\u26A0 Voice input requires Chrome, Edge, or another browser with SpeechRecognition support.');
+        return;
+    }
+
     if (recPhase === 'manual') {
-        // Stop manual — go back to wake
-        recPhase = 'wake';
+        // Stop manual — go back to wake (or off, if SR never armed on mobile)
+        recPhase = IS_MOBILE && !wakeArmed ? 'off' : 'wake';
         micBtn.classList.remove('active-mic'); micBtn.innerHTML = '&#127908;';
-        wakeIndicator.className = 'indicator on';
+        mainRec.onresult = wakeQueryHandler;
+        mainRec.onend = wakeEndHandler;
+        mainRec.onerror = wakeErrorHandler;
+        if (recPhase === 'wake') { setWakeLabel('on', 'WAKE'); }
+        else { setWakeLabel('off', 'TAP TO ARM'); stopMainRec(); }
     } else {
         // Switch to manual mode
+        if (recPhase === 'query') return; // ignore while ARIA is actively listening for a query
         recPhase = 'manual';
         micBtn.classList.add('active-mic'); micBtn.innerHTML = '&#9632;';
-        wakeIndicator.className = 'indicator off';
+        setWakeLabel('off', 'MANUAL');
 
-        // Use the main recogniser in manual mode
         mainRec.onresult = function (e) {
             var final_t = '';
             for (var i = 0; i < e.results.length; i++) {
@@ -790,31 +922,50 @@ micBtn.addEventListener('click', function () {
             }
             if (final_t.trim()) {
                 textInput.value = final_t.trim();
-                recPhase = 'wake'; micBtn.classList.remove('active-mic'); micBtn.innerHTML = '&#127908;';
-                wakeIndicator.className = 'indicator on';
-                // Re-attach wake handler
+                recPhase = (IS_MOBILE && !wakeArmed) ? 'off' : 'wake';
+                micBtn.classList.remove('active-mic'); micBtn.innerHTML = '&#127908;';
                 mainRec.onresult = wakeQueryHandler;
+                mainRec.onend = wakeEndHandler;
+                mainRec.onerror = wakeErrorHandler;
+                setWakeLabel(recPhase === 'wake' ? 'on' : 'off', recPhase === 'wake' ? 'WAKE' : 'TAP TO ARM');
                 sendMessage();
             }
         };
         mainRec.onend = function () {
             recRunning = false;
             if (recPhase === 'manual') {
-                recPhase = 'wake'; micBtn.classList.remove('active-mic'); micBtn.innerHTML = '&#127908;';
-                wakeIndicator.className = 'indicator on';
+                recPhase = (IS_MOBILE && !wakeArmed) ? 'off' : 'wake';
+                micBtn.classList.remove('active-mic'); micBtn.innerHTML = '&#127908;';
                 mainRec.onresult = wakeQueryHandler;
+                mainRec.onend = wakeEndHandler;
+                mainRec.onerror = wakeErrorHandler;
+                setWakeLabel(recPhase === 'wake' ? 'on' : 'off', recPhase === 'wake' ? 'WAKE' : 'TAP TO ARM');
+                if (recPhase === 'wake') setTimeout(startMainRec, 300);
             }
-            setTimeout(startMainRec, 300);
         };
+        mainRec.onerror = function (e) {
+            recRunning = false;
+            if (e.error === 'not-allowed' || e.error === 'service-not-allowed') {
+                fatalRecError = true;
+                recPhase = 'off';
+                micBtn.classList.remove('active-mic'); micBtn.innerHTML = '&#127908;';
+                setWakeLabel('off', 'NO MIC');
+                addMsg('system', '\u26A0 Microphone access blocked — allow microphone access for this site and reload.');
+                return;
+            }
+            // For other errors, just exit manual mode back to wake/off
+            if (recPhase === 'manual') {
+                recPhase = (IS_MOBILE && !wakeArmed) ? 'off' : 'wake';
+                micBtn.classList.remove('active-mic'); micBtn.innerHTML = '&#127908;';
+                mainRec.onresult = wakeQueryHandler;
+                mainRec.onend = wakeEndHandler;
+                mainRec.onerror = wakeErrorHandler;
+                setWakeLabel(recPhase === 'wake' ? 'on' : 'off', recPhase === 'wake' ? 'WAKE' : 'TAP TO ARM');
+            }
+        };
+        startMainRec();
     }
 });
-
-// Store reference to original handler for re-attachment
-var wakeQueryHandler = mainRec ? mainRec.onresult : null;
-// Set it properly after init
-if (mainRec) {
-    setTimeout(function () { wakeQueryHandler = mainRec.onresult; }, 100);
-}
 
 // ================================================================
 //  LECTURE RECORDER + TRANSCRIPTION
