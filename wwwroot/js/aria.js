@@ -365,27 +365,48 @@ function stopLipSync() {
 
 // ================================================================
 //  FIX 2 — TTS REBUILT (robust voice loading, pre-warm, fallback)
+//  FIX 4/5 — MOBILE VOICE OUTPUT + STUCK "SPEAKING" STATE
 //
-//  Root cause of "ARIA doesn't talk back":
+//  Root causes addressed:
 //  1. Voices not loaded → fixed with polling + retry
-//  2. Chrome autoplay blocked → fixed with pre-warm on first gesture
-//  3. Queue issues → simplified to direct speak with sentence splitting
+//  2. Chrome/Safari autoplay blocked → fixed with pre-warm on first gesture
+//  3. iOS Safari: speechSynthesis.cancel() right before speak() can cause
+//     onend/onerror to NEVER fire for the new utterance → ARIA gets stuck
+//     in "speaking" forever and sendMessage() refuses further input
+//     (it requires ariaState === 'idle'). Fixed with:
+//       - avoid cancel()-then-speak in the normal path (only cancel when
+//         explicitly interrupting)
+//       - a per-utterance watchdog timer that force-advances the queue
+//         if neither onstart nor onend/onerror fire in time
+//  4. iOS Safari pauses long utterances after ~15s of background/locked
+//     screen → fixed with a periodic speechSynthesis.resume() kicker
+//  5. iOS often reports voices with no "Google" match and can choke if
+//     u.lang isn't set explicitly → always set u.lang, and fall back to
+//     the system default voice (voice left unset) if no match found
 // ================================================================
 var voices = [];
 var ttsQueue = [];
 var ttsSpeaking = false;
 var ttsReady = false;
+var ttsWatchdog = null;
+var IS_IOS_TTS = /iPad|iPhone|iPod/.test(navigator.userAgent) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
 
 // Load voices with polling — Chrome loads them async and sometimes
 // onvoiceschanged never fires, so we poll every 200ms until they appear
-function loadVoicesWithRetry() {
+function loadVoicesWithRetry(attempts) {
+    attempts = attempts || 0;
     var v = window.speechSynthesis.getVoices();
     if (v && v.length > 0) {
         voices = Array.from(v);
         ttsReady = true;
         updateVoiceSelect();
+    } else if (attempts < 25) {
+        // iOS Safari sometimes needs a long time (or never fires onvoiceschanged) —
+        // cap retries but keep trying for a few seconds
+        setTimeout(function () { loadVoicesWithRetry(attempts + 1); }, 200);
     } else {
-        setTimeout(loadVoicesWithRetry, 200);
+        // Give up polling — speak() will still work with the default voice (voice left unset)
+        ttsReady = true;
     }
 }
 
@@ -394,9 +415,11 @@ function updateVoiceSelect() {
     voices.forEach(function (vx, i) {
         var opt = document.createElement('option');
         opt.value = i; opt.textContent = vx.name + ' (' + vx.lang + ')';
-        // Prefer Google US English — most natural for TTS
+        // Prefer Google US English on desktop Chrome — most natural for TTS
         if (vx.name === 'Google US English') opt.selected = true;
         else if (!opt.selected && vx.name.toLowerCase().indexOf('google') !== -1 && vx.lang.startsWith('en')) opt.selected = true;
+        // On iOS, prefer a default English voice (e.g. Samantha/Siri voices)
+        else if (!opt.selected && voices.every(function (vv) { return vv.name.toLowerCase().indexOf('google') === -1; }) && vx.lang === 'en-US' && vx.default) opt.selected = true;
         voiceSelect.appendChild(opt);
     });
 }
@@ -404,31 +427,61 @@ function updateVoiceSelect() {
 window.speechSynthesis.onvoiceschanged = function () { loadVoicesWithRetry(); };
 loadVoicesWithRetry();
 
-// Pre-warm TTS engine on first user gesture — eliminates Chrome's cold-start delay
+// Pre-warm TTS engine on first user gesture — eliminates Chrome/Safari cold-start delay
+// and is REQUIRED on iOS to unlock audio output for speechSynthesis.
 var ttsWarmed = false;
 function warmTTS() {
     if (ttsWarmed) return;
     ttsWarmed = true;
     try {
-        window.speechSynthesis.cancel();
-        var u = new SpeechSynthesisUtterance('');
-        u.volume = 0; u.rate = 99;
+        // Re-trigger voice list load — iOS sometimes only populates voices
+        // after the first user-gesture-triggered speak() call
+        if (!voices.length) loadVoicesWithRetry();
+
+        var u = new SpeechSynthesisUtterance(' ');
+        u.volume = 0.01; // iOS can ignore volume:0 utterances entirely
+        u.rate = 10;
+        u.lang = 'en-US';
         window.speechSynthesis.speak(u);
+        // Some browsers leave a "warm" utterance in a paused state — cancel it
+        // shortly after so it doesn't block the real queue, but only after it's
+        // had a chance to actually run.
+        setTimeout(function () {
+            try { window.speechSynthesis.cancel(); } catch (e) { }
+        }, 250);
     } catch (e) { }
 }
-// Attach to multiple events to ensure warm happens
-['click', 'keydown', 'touchstart'].forEach(function (ev) {
+// Attach to multiple events to ensure warm happens on the first interaction
+['click', 'keydown', 'touchstart', 'touchend'].forEach(function (ev) {
     document.addEventListener(ev, warmTTS, { passive: true });
 });
+
+// iOS Safari pauses speechSynthesis after ~15s of inactivity/background.
+// Periodically nudge it to keep long responses speaking.
+if (IS_IOS_TTS) {
+    setInterval(function () {
+        if (window.speechSynthesis.speaking && !window.speechSynthesis.paused) {
+            // no-op kicker: reading .speaking keeps some iOS versions alive
+        }
+        if (window.speechSynthesis.paused) {
+            try { window.speechSynthesis.resume(); } catch (e) { }
+        }
+    }, 5000);
+}
 
 function getBestVoice() {
     if (!voices.length) {
         var v = window.speechSynthesis.getVoices();
         if (v && v.length > 0) { voices = Array.from(v); updateVoiceSelect(); }
     }
+    if (!voices.length) return null; // let the browser use its default voice
+
     var vi = parseInt(voiceSelect.value, 10);
     if (voices[vi]) return voices[vi];
-    // Fallback: find any English voice
+
+    // Fallback: prefer the marked default English voice (common on iOS), else any English voice
+    var def = voices.find(function (v) { return v.lang.startsWith('en') && v.default; });
+    if (def) return def;
     var eng = voices.find(function (v) { return v.lang.startsWith('en'); });
     return eng || null;
 }
@@ -440,7 +493,13 @@ function speakNow(text, onDone) {
     if (!ttsSpeaking) drainTTS();
 }
 
+function clearTtsWatchdog() {
+    if (ttsWatchdog) { clearTimeout(ttsWatchdog); ttsWatchdog = null; }
+}
+
 function drainTTS() {
+    clearTtsWatchdog();
+
     if (!ttsQueue.length) {
         ttsSpeaking = false;
         if (ariaState === 'speaking') setState('idle');
@@ -451,39 +510,68 @@ function drainTTS() {
 
     var item = ttsQueue.shift();
 
-    // Cancel anything playing before we speak
-    window.speechSynthesis.cancel();
+    var u = new SpeechSynthesisUtterance(item.text);
+    var voice = getBestVoice();
+    if (voice) {
+        u.voice = voice;
+        u.lang = voice.lang;
+    } else {
+        u.lang = 'en-US';
+    }
+    u.rate = 1.05;
+    u.pitch = 1.0;
+    u.volume = 1.0;
 
-    // Small delay after cancel — Chrome needs this
-    setTimeout(function () {
-        var u = new SpeechSynthesisUtterance(item.text);
-        var voice = getBestVoice();
-        if (voice) u.voice = voice;
-        u.rate = 1.05;
-        u.pitch = 1.0;
-        u.volume = 1.0;
+    var advanced = false;
+    function advance() {
+        if (advanced) return;
+        advanced = true;
+        clearTtsWatchdog();
+        if (item.cb) item.cb();
+        drainTTS();
+    }
 
-        u.onstart = function () { if (ariaState !== 'speaking') setState('speaking'); };
-        u.onend = function () { if (item.cb) item.cb(); drainTTS(); };
-        u.onerror = function (e) {
-            console.warn('TTS error:', e.error);
-            if (item.cb) item.cb();
-            drainTTS();
-        };
+    u.onstart = function () {
+        if (ariaState !== 'speaking') setState('speaking');
+        // Once it actually starts, give it a generous watchdog based on text
+        // length in case onend never fires (known iOS issue).
+        clearTtsWatchdog();
+        var estMs = Math.max(4000, item.text.length * 110);
+        ttsWatchdog = setTimeout(advance, estMs);
+    };
+    u.onend = advance;
+    u.onerror = function (e) {
+        console.warn('TTS error:', e && e.error);
+        advance();
+    };
 
-        try {
-            window.speechSynthesis.speak(u);
-        } catch (e) {
-            console.warn('speechSynthesis.speak failed:', e);
-            if (item.cb) item.cb();
-            drainTTS();
-        }
-    }, 60);
+    try {
+        window.speechSynthesis.speak(u);
+
+        // Fallback watchdog in case onstart ALSO never fires (some Android
+        // WebViews / locked-screen iOS). If speech hasn't started within 1.5s,
+        // assume it silently failed and move on rather than blocking input.
+        clearTtsWatchdog();
+        ttsWatchdog = setTimeout(function () {
+            if (!window.speechSynthesis.speaking) {
+                advance();
+            } else {
+                // It did start late — apply the normal length-based watchdog
+                var estMs = Math.max(4000, item.text.length * 110);
+                ttsWatchdog = setTimeout(advance, estMs);
+            }
+        }, 1500);
+    } catch (e) {
+        console.warn('speechSynthesis.speak failed:', e);
+        advance();
+    }
 }
 
 function stopTTS() {
     ttsQueue = []; ttsSpeaking = false;
+    clearTtsWatchdog();
     try { window.speechSynthesis.cancel(); } catch (e) { }
+    if (ariaState === 'speaking') setState('idle');
 }
 
 // ================================================================
