@@ -32,11 +32,11 @@ namespace AiRobotDemo.Controllers
                 return;
             }
 
-            // Inject date/time as INTERNAL CONTEXT so ARIA knows it
-            // but the system prompt explicitly forbids echoing it back
-            var now = DateTime.Now;
-            var ctx = $"[INTERNAL — do not mention in response: date={now:dddd d MMMM yyyy}, time={now:h:mm tt}]";
-            var prompt = $"{ctx} {clean}";
+            // Use the client's local date/time (sent by the browser) so the
+            // answer is correct for the user's timezone — not the server's.
+            // Fall back to server time only if the client didn't supply it.
+            var clientDatetime = SanitiseShort(req?.ClientDatetime ?? "");
+            var clientTz = SanitiseShort(req?.ClientTz ?? "");
 
             var history = req?.History?
                 .Select(h => new ConversationTurn
@@ -51,7 +51,7 @@ namespace AiRobotDemo.Controllers
 
             try
             {
-                await foreach (var token in _ai.AskStream(prompt, history, HttpContext.RequestAborted))
+                await foreach (var token in _ai.AskStream(clean, history, clientDatetime, clientTz, HttpContext.RequestAborted))
                 {
                     await Response.WriteAsync($"data: {JsonSerializer.Serialize(new { token })}\n\n");
                     await Response.Body.FlushAsync();
@@ -75,12 +75,12 @@ namespace AiRobotDemo.Controllers
             if (!Validate(req?.Text, out var clean, out var errMsg))
                 return BadRequest(new { error = errMsg });
 
-            var now = DateTime.Now;
-            var ctx = $"[INTERNAL — do not mention in response: date={now:dddd d MMMM yyyy}, time={now:h:mm tt}]";
+            var clientDatetime = SanitiseShort(req?.ClientDatetime ?? "");
+            var clientTz = SanitiseShort(req?.ClientTz ?? "");
 
             try
             {
-                return Json(new { text = await _ai.Ask($"{ctx} {clean}") });
+                return Json(new { text = await _ai.Ask(clean, null, clientDatetime, clientTz) });
             }
             catch (Exception) { return StatusCode(500, new { error = "An internal server error occurred" }); }
         }
@@ -122,6 +122,11 @@ namespace AiRobotDemo.Controllers
         private static string Sanitise(string s) =>
             Regex.Replace(s.Replace("\0", ""), "<[^>]+>", "").Trim();
 
+        // For short metadata fields — strip anything suspicious, cap length
+        private static string SanitiseShort(string s) =>
+            Regex.Replace(s.Replace("\0", ""), "[^\\w\\s:,/+-]", "").Trim().Length > 80
+                ? "" : Regex.Replace(s.Replace("\0", ""), "[^\\w\\s:,/+-]", "").Trim();
+
         private static string SafeMsg(string m)
         {
             if (m.Contains("gsk_", StringComparison.OrdinalIgnoreCase) ||
@@ -135,6 +140,8 @@ namespace AiRobotDemo.Controllers
     {
         public string? Text { get; set; }
         public List<HistoryItem>? History { get; set; }
+        public string? ClientDatetime { get; set; }   // e.g. "Saturday 14 June 2025, 3:42 PM"
+        public string? ClientTz { get; set; }   // e.g. "Africa/Johannesburg"
     }
     public class HistoryItem
     {

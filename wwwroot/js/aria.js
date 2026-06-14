@@ -705,13 +705,26 @@ async function sendMessage(override) {
     var prompt = buildPrompt(raw);
     var hist = convHistory.slice(-MAX_HIST).map(function (t) { return { user: t.User, assistant: t.Assistant }; });
 
+    // Build the client's local date/time to send to the server.
+    // The server uses DateTime.Now (server timezone) which is wrong for the user.
+    // Sending it from the browser guarantees it matches the user's actual clock.
+    var now = new Date();
+    var days = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
+    var months = ['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December'];
+    var h = now.getHours(), ampm = h >= 12 ? 'PM' : 'AM';
+    var h12 = h % 12 || 12, mins = String(now.getMinutes()).padStart(2, '0');
+    var clientDatetime = days[now.getDay()] + ' ' + now.getDate() + ' ' + months[now.getMonth()] + ' ' + now.getFullYear()
+        + ', ' + h12 + ':' + mins + ' ' + ampm;
+    var clientTz = '';
+    try { clientTz = Intl.DateTimeFormat().resolvedOptions().timeZone; } catch (e) { }
+
     var ariaBubble = null, fullText = '', sentBuf = '';
 
     try {
         var res = await fetch('/Robot/AskStream', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json', 'RequestVerificationToken': getCsrf() },
-            body: JSON.stringify({ text: prompt, history: hist })
+            body: JSON.stringify({ text: prompt, history: hist, clientDatetime: clientDatetime, clientTz: clientTz })
         });
         if (!res.ok) { var ed = await res.json().catch(function () { return {}; }); throw new Error(ed.error || 'Server error ' + res.status); }
         if (!res.body) throw new Error('Streaming not supported in this browser');
