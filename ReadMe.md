@@ -1,4 +1,4 @@
-# ARIA - AI Robot Assistant
+# 🤖 ARIA - AI Robot Assistant
 
 ARIA (Autonomous Robotic Intelligence Assistant) is an ASP.NET Core MVC web application that 
 provides an interactive AI-powered chat and voice interface.
@@ -74,43 +74,7 @@ voice transcription, rate limiting, and secure server-side API communication.
 
 The application follows a traditional ASP.NET MVC architecture.
 
-### Controllers
-
-#### RobotController
-
-Responsible for:
-
-* Processing chat requests
-* Streaming AI responses
-* Handling audio transcription uploads
-* Request validation
-* Error handling
-
-### Services
-
-#### OpenAiService
-
-Responsible for:
-
-* Communicating with Groq APIs
-* Managing chat completions
-* Streaming response tokens
-* Audio transcription
-* Building AI conversation context
-
-### Models
-
-#### ChatRequest
-
-Represents incoming chat requests and conversation history.
-
-#### ConversationTurn
-
-Stores user and assistant conversation messages.
-
----
-
-## Project Structure
+### Project Structure
 
 ```text
 AiRobotDemo
@@ -134,60 +98,6 @@ AiRobotDemo
 ├── Program.cs
 ├── appsettings.json
 └── AiRobotDemo.csproj
-```
-
----
-
-## Getting Started
-
-### Prerequisites
-
-Install:
-
-* .NET 8 SDK
-* Visual Studio 2022 or later
-* A Groq API key
-
----
-
-## Clone the Repository
-
-```bash
-git clone https://github.com/YOUR_USERNAME/YOUR_REPOSITORY.git
-cd YOUR_REPOSITORY
-```
-
----
-
-## Configure
-
-Add your Groq API key:
-
-```bash
-dotnet user-secrets set "Groq:ApiKey" "YOUR_API_KEY"
-```
-
----
-
-## Build the Application
-
-```bash
-dotnet restore
-dotnet build
-```
-
----
-
-## Run the Application
-
-```bash
-dotnet run
-```
-
-The application will start locally and can be accessed through:
-
-```text
-https://localhost:xxxx
 ```
 
 ---
@@ -232,12 +142,6 @@ The application includes built-in protection against abuse.
 10 requests per minute
 ```
 
-These limits can be configured in:
-
-```text
-Program.cs
-```
-
 ---
 
 ## Security Considerations
@@ -274,7 +178,6 @@ This project was developed to explore:
 * AI API integration
 * Streaming responses
 * Speech-to-text processing
-* Modern backend architecture
 
 ---
 
